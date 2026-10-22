@@ -2,11 +2,17 @@
 
 Carry an SSH session home inside ordinary text messages.
 
-If your Mac at home has no reachable address — behind CGNAT, on a captive
-network, on a boat with a satellite messaging plan, on hotel Wi-Fi that blocks
-everything except Apple's push service — but iMessage still gets through, then
-you still have a byte pipe. `imsg-ssh` turns that pipe into an OpenSSH
-`ProxyCommand`, so `ssh` works normally over it:
+Plenty of networks pass messages and nothing else:
+
+- in-flight Wi-Fi sold as a "messaging only" pass
+- a cruise ship package that covers iMessage and WhatsApp but meters everything
+  else by the megabyte
+- hotel, airport and conference portals that block outbound SSH
+- guest networks that only ever finish a TLS handshake with a captive portal
+- a Mac at home behind CGNAT with no address to connect to in the first place
+
+If iMessage still gets through, you still have a byte pipe. `imsg-ssh` turns
+that pipe into an OpenSSH `ProxyCommand`, so `ssh` works normally over it:
 
 ```sh
 $ imsg_ssh.py connect 'uptime; df -h /'
@@ -125,9 +131,9 @@ seconds are spent on. After that a round trip is a few seconds. Notes:
   poor fit. SSH compression helps text a lot and encrypted payloads not at all.
 - Apple's rate limits are undocumented and may add delay. Raise
   `message_interval` if you see sends being throttled.
-- Latency on the messaging path itself dominates everything. A satellite or
-  ship plan will be slower than the numbers above, and the defaults are chosen
-  to tolerate that rather than to look fast here.
+- Latency on the messaging path itself dominates everything. An in-flight or
+  shipboard messaging plan will be slower than the numbers above, and the
+  defaults are chosen to tolerate that rather than to look fast here.
 
 ## Reliability
 
