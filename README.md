@@ -45,7 +45,7 @@ ever connects to the one sshd named in its own config file.
 On **both** Macs:
 
 ```sh
-git clone https://github.com/<you>/imsg-ssh.git ~/imsg-ssh
+git clone https://github.com/digitalhen/imsg-ssh.git ~/imsg-ssh
 cd ~/imsg-ssh
 python3 -m unittest -q test_imsg_ssh      # optional, ~20s, sends nothing
 ```
