@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# Local state: these hold the shared transport key and machine-specific ids.
+config.json
+config.relay.lock
+known_hosts
+.scratch/
