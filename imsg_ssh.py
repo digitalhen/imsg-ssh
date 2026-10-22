@@ -112,7 +112,7 @@ class Stream:
         self.ack_due = False
         self.ack_since = 0.0
         self.local_eof = self.remote_eof = False
-        self.bytes_in = self.bytes_out = self.packets_out = 0
+        self.bytes_in = self.bytes_out = self.packets_out = self.retries = 0
 
     def ready(self):
         """True when another payload can be queued."""
@@ -179,6 +179,8 @@ class Stream:
         item = self.pending.get(frame['seq']) if frame['kind'] in ('D', 'E') else None
         if item is not None:
             item[2], item[3] = now, item[3] + 1
+            if item[3] > 1:
+                self.retries += 1
 
 
 # --- iMessage link ---------------------------------------------------------
@@ -225,7 +227,9 @@ def open_chat_db(path=CHAT_DB):
 def make_sender(config):
     """Return send(text). Prefers imsg; falls back to AppleScript."""
     mode = config.get('sender', 'auto')
-    binary = config.get('imsg') or shutil.which('imsg')
+    binary = config.get('imsg')
+    if not binary or not Path(binary).exists():
+        binary = shutil.which('imsg')
     if mode in ('auto', 'imsg') and binary and Path(binary).exists():
         chat = str(config['chat_id'])
         def send(text):
@@ -253,6 +257,8 @@ class MessageLink:
         if self.interval < .1:
             raise ValueError('message_interval must be at least 0.1 seconds')
         self.poll_seconds = float(config.get('poll_seconds', .25))
+        self.idle_poll_seconds = float(config.get('idle_poll_seconds', 1.0))
+        self.busy_seconds = float(config.get('busy_seconds', 60))
         self.reopen_seconds = float(config.get('reopen_seconds', 30))
         self.send_one = make_sender(config)
         self.con = open_chat_db(self.db)
@@ -261,7 +267,7 @@ class MessageLink:
         self.last_send = 0.0
         self.next_poll = 0.0
         self.cursor = self._latest_rowid()
-        self.last_new = time.monotonic()
+        self.last_new = self.last_packet = time.monotonic()
         self.sends = self.reads = 0
 
     def _latest_rowid(self):
@@ -312,6 +318,7 @@ class MessageLink:
             while len(self.seen) > 512:
                 self.seen.popitem(last=False)
             self.reads += 1
+            self.last_packet = time.monotonic()
             self.queue.append(packet)
 
     def receive(self, timeout=.05):
@@ -321,7 +328,10 @@ class MessageLink:
                 return self.queue.popleft()
             now = time.monotonic()
             if now >= self.next_poll:
-                self.next_poll = now + self.poll_seconds
+                # Poll briskly inside a conversation, lazily while nothing is happening.
+                self.next_poll = now + (self.poll_seconds
+                                        if now - self.last_packet < self.busy_seconds
+                                        else self.idle_poll_seconds)
                 self._poll()
                 if self.queue:
                     continue
@@ -496,8 +506,9 @@ def session(link, key, sid, role, source, sink, close_sink, config):
             if role == 'C' and stream.remote_eof and not stream.ack_due:
                 return  # sshd closed and our final ACK is out; ssh is finished
     finally:
-        log('session %s moved %d bytes in / %d out in %d messages'
-            % (sid[:8], stream.bytes_in, stream.bytes_out, stream.packets_out))
+        log('session %s moved %d bytes in / %d out in %d messages%s'
+            % (sid[:8], stream.bytes_in, stream.bytes_out, stream.packets_out,
+               ', %d retransmitted' % stream.retries if stream.retries else ''))
 
 
 def open_session(link, key, config):
@@ -509,7 +520,7 @@ def open_session(link, key, config):
     while time.monotonic() < deadline:
         if time.monotonic() >= next_send:
             link.send(encode(key, sid, 'C', 'O'))
-            next_send = time.monotonic() + retry
+            next_send = time.monotonic() + (max(10.0, retry / 2) if busy else retry)
         text = link.receive(.1)
         frame = decode(key, text) if text else None
         if not frame or frame['sid'] != sid or frame['role'] != 'S':
@@ -523,8 +534,9 @@ def open_session(link, key, config):
             continue
         if frame['kind'] == 'O':
             return sid
-    raise TimeoutError('relay did not answer; check chat ids, the shared key and '
-                       'that Messages is signed in on both Macs')
+    raise TimeoutError('relay did not answer; check that the relay is running, that '
+                       'both Macs use the same conversation and shared key, and that '
+                       'their clocks agree to within five minutes')
 
 
 def serve(link, key, config, once=False):
@@ -548,6 +560,7 @@ def serve(link, key, config, once=False):
         except OSError as exc:
             log('cannot reach %s:%d: %s' % (target[0], target[1], exc))
             link.send(encode(key, sid, 'S', 'N'))
+            completed[sid] = time.time()   # a duplicate OPEN must not retry it
             continue
         try:
             sock.settimeout(None)
@@ -669,6 +682,11 @@ def cmd_export(args):
     cfg, _ = load_config(args.config)
     bundle = {k: cfg[k] for k in CLIENT_KEYS if cfg.get(k)}
     bundle['ssh_user'] = cfg.get('ssh_user') or os.environ.get('USER', '')
+    bundle['ssh_host_key'] = cfg.get('ssh_host_key') or host_ssh_key()
+    if not bundle['ssh_host_key']:
+        bundle.pop('ssh_host_key')
+        log('WARNING no sshd host key found in /etc/ssh; is Remote Login enabled?')
+        log('without it the laptop cannot pin this Mac and will refuse to connect')
     blob = base64.urlsafe_b64encode(json.dumps(bundle, sort_keys=True).encode()).decode()
     print(blob)
     log('paste that line into the laptop\'s: imsg_ssh.py import <bundle>')
@@ -714,8 +732,9 @@ def cmd_setup(args):
             print('other Mac\'s number will not work here.')
             chat_id = int(input('chat id: ').strip())
     cfg.update(chat_details(int(chat_id)))
-    if shutil.which('imsg'):
-        cfg.setdefault('imsg', shutil.which('imsg'))
+    found = shutil.which('imsg')
+    if found and not Path(cfg.get('imsg') or '/nonexistent').exists():
+        cfg['imsg'] = found      # a stored path can go stale across upgrades
     save_config(path, cfg)
     log('configured chat %d (%s)' % (cfg['chat_id'], cfg['handle']))
     return cmd_doctor(args)

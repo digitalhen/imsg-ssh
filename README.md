@@ -105,16 +105,29 @@ what the pipe costs before copying anything large.
 
 ### What to expect
 
-- Payload is 1200 bytes per message, paced 1.5s apart per direction, four
-  packets in flight. The ceiling is a few hundred bytes per second.
-- An SSH handshake is a few hundred bytes each way: about a minute before the
-  first prompt, in good conditions.
-- Interactive typing echoes in seconds, not milliseconds. `tmux` or a one-shot
-  command is much more pleasant than a raw shell.
+Payload is 1200 bytes per message, paced 1.5s apart per direction, four packets
+in flight: a ceiling near 800 bytes per second each way. Measured between two
+Macs on ordinary broadband, messaging the same Apple account:
+
+| what | time | messages |
+| ---- | ---- | -------- |
+| `connect hostname` — full handshake, command, clean exit | 23s | 10 each way |
+| interactive shell to first prompt | 25s | — |
+| one command typed into that shell | ~3s | 2 each way |
+| reconnect after the previous client was killed with `-9` | 64s | — |
+
+An SSH handshake is about 3KB each way, and that is what the first twenty
+seconds are spent on. After that a round trip is a few seconds. Notes:
+
+- `tmux` or a one-shot command is much more pleasant than a raw shell, and
+  survives the link dropping.
 - Chatty output, full-screen programs (`top`, `vim`) and large transfers are a
   poor fit. SSH compression helps text a lot and encrypted payloads not at all.
 - Apple's rate limits are undocumented and may add delay. Raise
   `message_interval` if you see sends being throttled.
+- Latency on the messaging path itself dominates everything. A satellite or
+  ship plan will be slower than the numbers above, and the defaults are chosen
+  to tolerate that rather than to look fast here.
 
 ## Reliability
 
